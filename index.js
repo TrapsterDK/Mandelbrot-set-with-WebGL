@@ -1,14 +1,22 @@
-/*const fragment_shader_source = `#version 300 es
+const vertexShaderSource = `#version 300 es
+in vec4 a_position;
+out vec2 position;
+
+void main()
+{
+    gl_Position = a_position;
+    position = a_position.xy;
+}`
+
+const fragmentShaderSource = `#version 300 es
 precision highp float;
 
 uniform float zoom;
 uniform vec2 center;
-uniform vec2 window;
-uniform vec2 axis_scaler;
 uniform int max_iterations;
 
 in vec2 position;
-out vec4 FragColor;
+out vec4 out_color;
 
 int custom_mod(int c, int m){
     return c-(c/m*m);
@@ -16,8 +24,8 @@ int custom_mod(int c, int m){
 
 void main()
 {
-    float x0 = center.x+(position.x*window.x)*zoom*axis_scaler.x;
-    float y0 = center.y+(position.y*window.y)*zoom*axis_scaler.y;
+    float x0 = center.x+position.x*zoom;
+    float y0 = center.y+position.y*zoom;
     float x = 0.0;
     float y = 0.0;
     float x2 = 0.0;
@@ -25,47 +33,44 @@ void main()
     int i = 0;
 
     while (x2 + y2 <= 4.0 && i < max_iterations){
-        y = 2.0 * x * y + y0;
+        y = (x + x) * y + y0;
         x = x2 - y2 + x0;
         x2 = x * x;
         y2 = y * y;
         i++;
     }
 
-    FragColor = vec4(float(custom_mod(i, 4)) * 64.0/255.0, float(custom_mod(i, 8)) * 32.0/255.0, float(custom_mod(i, 16)) * 16.0/255.0, 1.0);
-}`*/
-
-const fragment_shader_source = `#version 300 es
-precision highp float;
-out vec4 FragColor;
-void main()
-{
-    FragColor = vec4(1.0, 0.0, 0.0, 1.0);
-}
-`
-
-const vertex_shader_source = `#version 300 es
-layout (location = 0) in vec2 pos;
-out vec2 position;
-void main()
-{
-    gl_Position = vec4(pos.xy, 0.0, 1.0);
-    position = vec2(pos.xy);
+    out_color = vec4(float(custom_mod(i, 4)) * 64.0/255.0, float(custom_mod(i, 8)) * 32.0/255.0, float(custom_mod(i, 16)) * 16.0/255.0, 1.0);
 }`
 
+function createShader(gl, type, source) {
+    var shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    var success = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+    if (success) {
+      return shader;
+    }
+  
+    console.log(gl.getShaderInfoLog(shader));  // eslint-disable-line
+    gl.deleteShader(shader);
+    return undefined;
+}
 
-const vertices = new Float32Array([
-//    x      y      z   
-     1.0,  1.0, -0.0,
-     1.0, -1.0, -0.0,
-    -1.0, -1.0, -0.0,
-    -1.0,  1.0, -0.0
-]);
+function createProgram(gl, vertexShader, fragmentShader) {
+    var program = gl.createProgram();
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    var success = gl.getProgramParameter(program, gl.LINK_STATUS);
+    if (success) {
+        return program;
+    }
 
-const indices = new Float32Array([
-    0, 1, 2,   // first triangle
-    0, 2, 3    // second triangle
-]);
+    console.log(gl.getProgramInfoLog(program));  // eslint-disable-line
+    gl.deleteProgram(program);
+    return undefined;
+}
 
 window.onload = function() {
     const canvas = document.querySelector("canvas");
@@ -73,51 +78,70 @@ window.onload = function() {
     const gl = canvas.getContext("webgl2")
     if(gl === null) throw new Error('Could not create a webgl context');
 
-    const program = gl.createProgram();
+    // create GLSL shaders, upload the GLSL source, compile the shaders
+    var vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+    var fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
 
-    // create a new vertex shader and a fragment shader
-    const vertex_shader = gl.createShader(gl.VERTEX_SHADER);
-    const fragment_shader = gl.createShader(gl.FRAGMENT_SHADER);
+    // Link the two shaders into a program
+    var program = createProgram(gl, vertexShader, fragmentShader);
 
-    // specify the source code for the shaders using those strings
-    gl.shaderSource(vertex_shader, vertex_shader_source);
-    gl.shaderSource(fragment_shader, fragment_shader_source);
-    
-    // compile the shaders
-    gl.compileShader(vertex_shader);
-    if (!gl.getShaderParameter(vertex_shader, gl.COMPILE_STATUS))
-		throw new Error("Error while compiling vertex shader: " + gl.getShaderInfoLog(vertex_shader));
+    // look up where the vertex data needs to go.
+    var positionAttributeLocation = gl.getAttribLocation(program, "a_position");
 
-    gl.compileShader(fragment_shader);
-    if (!gl.getShaderParameter(fragment_shader, gl.COMPILE_STATUS))
-		throw new Error("Error while compiling fragment shader: " + gl.getShaderInfoLog(fragment_shader));
-    
-    // attach the two shaders to the program
-    gl.attachShader(program, vertex_shader);
-    gl.attachShader(program, fragment_shader);
-    
-    gl.deleteShader(vertex_shader);
-    gl.deleteShader(fragment_shader);
+    // Create a buffer and put three 2d clip space points in it
+    var positionBuffer = gl.createBuffer();
 
-    gl.linkProgram(program);
-	if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-		console.error(gl.getProgramInfoLog(program));
-        gl.deleteProgram(program);
-	}
+    // Bind it to ARRAY_BUFFER (think of it as ARRAY_BUFFER = positionBuffer)
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
 
-    let VBO = gl.createBuffer()
-    let EBO = gl.createBuffer()
+    var positions = [
+        -1, 1, 1, 1, 1, -1, // Triangle 1
+        -1, 1, 1, -1, -1, -1 // Triangle 2 
+    ];
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, VBO);
-    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW); 
+    // Create a vertex array object (attribute state)
+    var vao = gl.createVertexArray();
 
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, EBO)
-    gl.bufferData(gl.ARRAY_BUFFER, indices, gl.STATIC_DRAW); 
+    // and make it the one we're currently working with
+    gl.bindVertexArray(vao);
 
-    //glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), 0);
-    //glEnableVertexAttribArray(0);
+    // Turn on the attribute
+    gl.enableVertexAttribArray(positionAttributeLocation);
 
+    // Tell the attribute how to get data out of positionBuffer (ARRAY_BUFFER)
+    var size = 2;          // 2 components per iteration
+    var type = gl.FLOAT;   // the data is 32bit floats
+    var normalize = false; // don't normalize the data
+    var stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next position
+    var offset = 0;        // start at the beginning of the buffer
+    gl.vertexAttribPointer(
+        positionAttributeLocation, size, type, normalize, stride, offset);
 
+    //webglUtils.resizeCanvasToDisplaySize(gl.canvas);
+
+    // Tell WebGL how to convert from clip space to pixels
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+    const zoom_handle = gl.getUniformLocation(program, "zoom")
+    const center_handle = gl.getUniformLocation(program, "center")
+    const window_handle = gl.getUniformLocation(program, "window")
+    const max_iterations_handle = gl.getUniformLocation(program, "max_iterations")
+
+    // Tell it to use our program (pair of shaders)
     gl.useProgram(program);
-    gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, 0)
+
+    gl.uniform1f(zoom_handle, 2)
+    gl.uniform2f(center_handle, 0, 0)
+    gl.uniform2f(window_handle, gl.canvas.width, gl.canvas.height)
+    gl.uniform1i(max_iterations_handle, 1000)
+
+    // Bind the attribute/buffer set we want.
+    gl.bindVertexArray(vao);
+
+    // draw
+    var primitiveType = gl.TRIANGLES;
+    var offset = 0;
+    var count = 6;
+    gl.drawArrays(primitiveType, offset, count);
 }
